@@ -2,7 +2,9 @@ Build and test on Arch Linux x86_64 with `tools/build-linux.sh --stress`.
 Use `--offline` after the first build to reuse cached payloads; `--clean` rebuilds
 all native objects. Output defaults to `build/ready/`, including checksums and
 build versions. Build dependencies: base-devel, git, libusb, libimobiledevice,
-libirecovery, libusbmuxd, libplist, pkgconf, vim (xxd), xz and Python 3.15+.
+libusbmuxd, libplist, pkgconf, vim (xxd), curl, xz and Python 3.15+.
+Install libirecovery separately from the AUR (`libirecovery-git`) or build upstream
+release 1.3.1; it is not an official Arch repository package.
 The script does not install packages or touch a connected phone.
 
 # palera1n — Arch Linux recovery fork

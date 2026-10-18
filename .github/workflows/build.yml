@@ -20,10 +20,17 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Install native Arch dependencies
-        run: pacman -Syu --noconfirm --needed git libusb libimobiledevice libirecovery libusbmuxd libplist pkgconf vim xz
+        run: pacman -Syu --noconfirm --needed git curl libusb libimobiledevice libimobiledevice-glue libusbmuxd libplist pkgconf vim xz readline
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Build libirecovery release (not packaged in Arch repositories)
+        run: |
+          git clone --depth 1 --branch 1.3.1 https://github.com/libimobiledevice/libirecovery.git /tmp/libirecovery
+          cd /tmp/libirecovery
+          ./autogen.sh --prefix=/usr --without-udev
+          make -j2
+          make install
       - name: Record build versions
         run: |
           cc --version
