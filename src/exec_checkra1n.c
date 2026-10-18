@@ -39,9 +39,11 @@ char* ext_checkra1n = NULL;
 
 int exec_checkra1n(void) {
 	LOG(LOG_INFO, "About to execute checkra1n");
-	int fd_checkra1n, fd_pongo, ret;
+    external_pongo = pongo_path != NULL;
+	int fd_checkra1n, ret;
 	char* checkra1n_path = NULL;
 #ifndef NO_CUSTOM_PONGO
+    int fd_pongo;
 	if (pongo_path == NULL) {
 		pongo_path = malloc(strlen(tmpdir) + 20);
 		if (pongo_path == NULL) {
@@ -64,6 +66,7 @@ int exec_checkra1n(void) {
 			pongo_path = NULL;
 			return -1;
 		}
+		close(fd_pongo);
 	} else external_pongo = true;
 #endif
 	if (ext_checkra1n != NULL) {
@@ -181,8 +184,13 @@ setenv_ra1n:
 	}, environ);
 	posix_spawn_file_actions_destroy(&action);
 	if (ret) {
-		LOG(LOG_FATAL, "Cannot posix spawn %s: %d (%s)", checkra1n_path, errno, strerror(errno));
-		if (ext_checkra1n != NULL) unlink(checkra1n_path);
+		LOG(LOG_FATAL, "Cannot posix spawn %s: %d (%s)", checkra1n_path, ret, strerror(ret));
+        if (ext_checkra1n == NULL) { unlink(checkra1n_path); free(checkra1n_path); }
+        if (pongo_path) {
+            if (!external_pongo) unlink(pongo_path);
+            free(pongo_path);
+            pongo_path = NULL;
+        }
 		return -1;
 	}
 	LOG(LOG_VERBOSE2, "%s spawned successfully", checkra1n_path);
@@ -201,7 +209,13 @@ setenv_ra1n:
 		free(checkra1n_path);
 		checkra1n_path = NULL;
 	}
-	waitpid(pid, NULL, 0);
+	int status;
+    pid_t waited;
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        LOG(LOG_ERROR, "checkra1n failed%s", waited >= 0 && WIFSIGNALED(status) ? " (terminated by signal)" : "");
+        ret = 1;
+    } else ret = 0;
 	if (!external_pongo && pongo_path != NULL) {
 		unlink(pongo_path);
 	}
@@ -216,5 +230,5 @@ setenv_ra1n:
 		libcheckra1nhelper_dylib_path = NULL;
 	}
 #endif
-	return 0;
+	return ret;
 }

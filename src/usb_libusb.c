@@ -35,6 +35,9 @@
 #include <string.h>             // strlen, strerror, memcpy, memmove
 #include <unistd.h>             // close
 #include <sys/mman.h>           // mmap, munmap
+#include <time.h>
+#include <sys/time.h>
+#include <usb_power.h>
 #include <sys/stat.h>           // fstst
 
 #include <palerain.h>
@@ -50,7 +53,7 @@ const char *usb_strerror(usb_ret_t err)
 
 usb_ret_t USBControlTransfer(usb_device_handle_t handle, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue, uint16_t wIndex, uint32_t wLength, void *data, uint32_t *wLenDone)
 {
-    usb_ret_t r = libusb_control_transfer(handle, bmRequestType, bRequest, wValue, wIndex, data, wLength, 0);
+    usb_ret_t r = libusb_control_transfer(handle, bmRequestType, bRequest, wValue, wIndex, data, wLength, 30000);
     if(r < 0) return r;
     if(wLenDone) *wLenDone = r;
     return USB_RET_SUCCESS;
@@ -63,7 +66,7 @@ usb_ret_t USBBulkUpload(usb_device_handle_t handle, void *data, int len)
     usb_ret_t r;
     if(maxLen == 0)
     {
-        r = libusb_bulk_transfer(handle, 2, data, len, &transferred, 0);
+        r = libusb_bulk_transfer(handle, 2, data, len, &transferred, 120000);
         if(r == LIBUSB_SUCCESS)
         {
             return transferred == len ? USB_RET_SUCCESS : LIBUSB_ERROR_INTERRUPTED;
@@ -103,166 +106,157 @@ usb_ret_t USBBulkUpload(usb_device_handle_t handle, void *data, int len)
         uint32_t chunk = len - done;
         if(chunk > maxLen) chunk = maxLen;
         transferred = 0;
-        r = libusb_bulk_transfer(handle, 2, (unsigned char*)data + done, chunk, &transferred, 0);
+        r = libusb_bulk_transfer(handle, 2, (unsigned char*)data + done, chunk, &transferred, 120000);
         done += transferred;
-        if(r == LIBUSB_SUCCESS) continue;
+        if(r == LIBUSB_SUCCESS) {
+            if(transferred == 0) return LIBUSB_ERROR_IO;
+            continue;
+        }
         if(r != LIBUSB_ERROR_NO_MEM || maxLen <= 0x40) return r;
         maxLen /= 2;
     }
     return LIBUSB_SUCCESS;
 }
 
-static int FoundDevice(libusb_context *ctx, libusb_device *dev, libusb_hotplug_event event, void *arg)
-{
-    stuff_t *stuff = arg;
-    if(stuff->handle)
-    {
-        return LIBUSB_SUCCESS;
-    }
-    LOG(LOG_VERBOSE, "PongoOS USB Device connected");
-
-    libusb_device_handle *handle;
-    int r = libusb_open(dev, &handle);
-    if(r != LIBUSB_SUCCESS)
-    {
-        ERR("libusb_open: %s", libusb_error_name(r));
-        return r;
-    }
-
-/* nah there would not be a kernel driver for pongoOS in Darwin */
-#if !defined(__APPLE__)
-    r = libusb_detach_kernel_driver(handle, 0);
-    if(r != LIBUSB_SUCCESS && r != LIBUSB_ERROR_NOT_FOUND)
-    {
-        ERR("libusb_detach_kernel_driver: %s", libusb_error_name(r));
-        return r;
-    }
+#ifndef PONGO_SYSFS_ROOT
+#define PONGO_SYSFS_ROOT "/sys/bus/usb/devices"
 #endif
 
-    r = libusb_set_configuration(handle, 1);
-    if(r != LIBUSB_SUCCESS)
-    {
-        ERR("libusb_set_configuration: %s", libusb_error_name(r));
-        return r;
+/* Discovery does not depend on a new hotplug event: Pongo may already be here. */
+int pongo_is_connected(void)
+{
+    libusb_context *ctx = NULL;
+    libusb_device **list = NULL;
+    int result = libusb_init(&ctx);
+    if (result) return result;
+    ssize_t count = libusb_get_device_list(ctx, &list);
+    result = 0;
+    if (count < 0) result = (int)count;
+    else for (ssize_t i = 0; i < count; ++i) {
+        struct libusb_device_descriptor desc;
+        if (libusb_get_device_descriptor(list[i], &desc)) continue;
+        if (desc.idVendor == PONGO_USB_VENDOR && desc.idProduct == PONGO_USB_PRODUCT) ++result;
     }
-
-    r = libusb_claim_interface(handle, 0);
-    if(r != LIBUSB_SUCCESS)
-    {
-        ERR("libusb_claim_interface: %s", libusb_error_name(r));
-        return r;
+    if (list) libusb_free_device_list(list, 1);
+    libusb_exit(ctx);
+    if (result > 1) {
+        ERR("Multiple PongoOS devices connected; select one device before continuing");
+        return LIBUSB_ERROR_BUSY;
     }
-
-    stuff->dev = dev;
-    stuff->handle = handle;
-    io_start(stuff);
-
-    return LIBUSB_SUCCESS;
+    return result;
 }
 
-static int LostDevice(libusb_context *ctx, libusb_device *dev, libusb_hotplug_event event, void *arg)
+typedef struct {
+    libusb_context *ctx;
+    libusb_device **list;
+    libusb_device_handle *handle;
+    bool claimed;
+#ifdef __linux__
+    usb_power_state power;
+#endif
+} pongo_connection;
+
+static void close_connection(void *opaque)
 {
-    stuff_t *stuff = arg;
-    if(stuff->dev != dev)
-    {
-        return LIBUSB_SUCCESS;
+    pongo_connection *connection = opaque;
+    if (connection->handle) {
+        if (connection->claimed) libusb_release_interface(connection->handle, 0);
+        libusb_close(connection->handle);
+        connection->handle = NULL;
+        connection->claimed = false;
     }
-    LOG(LOG_VERBOSE, "PongoOS USB Device disconnected");
+#ifdef __linux__
+    usb_power_restore(&connection->power);
+#endif
+    if (connection->list) {
+        libusb_free_device_list(connection->list, 1);
+        connection->list = NULL;
+    }
+}
 
-    io_stop(stuff);
-    libusb_close(stuff->handle);
-    libusb_unref_device(dev);
-    stuff->handle = NULL;
-    stuff->dev = NULL;
+static void cleanup_connection(void *opaque)
+{
+    pongo_connection *connection = opaque;
+    close_connection(connection);
+    libusb_exit(connection->ctx);
+}
 
-    return LIBUSB_SUCCESS;
+static bool retry_open(int error)
+{
+    return error == LIBUSB_ERROR_NO_DEVICE || error == LIBUSB_ERROR_IO ||
+           error == LIBUSB_ERROR_BUSY || error == LIBUSB_ERROR_TIMEOUT ||
+           error == LIBUSB_ERROR_INTERRUPTED || error == LIBUSB_ERROR_NOT_FOUND;
 }
 
 int wait_for_pongo(void)
 {
-    stuff_t stuff = {0};
-    libusb_hotplug_callback_handle hp[2];
-    libusb_context* ctx = NULL;
-
-    int r = libusb_init(&ctx);
-    if(r != LIBUSB_SUCCESS)
-    {
-        ERR("libusb_init: %s", libusb_error_name(r));
-        return -1;
-    }
-
-    if(!libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG))
-    {
-        ERR("libusb: no hotplug capability");
-        libusb_exit(ctx);
-        return -1;
-    }
-
-    r = libusb_hotplug_register_callback(ctx, LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, 0, PONGO_USB_VENDOR, PONGO_USB_PRODUCT, LIBUSB_HOTPLUG_MATCH_ANY, LostDevice, &stuff, &hp[1]);
-    if(r != LIBUSB_SUCCESS)
-    {
-        ERR("libusb_hotplug: %s", libusb_error_name(r));
-        libusb_exit(ctx);
-        return -1;
-    }
-
-    while (1) {
-        r = libusb_handle_events(ctx);
-        if(r != LIBUSB_SUCCESS)
-        {
-            ERR("libusb_handle_events: %s", libusb_error_name(r));
+    pongo_connection connection = {0};
+    int result = libusb_init(&connection.ctx);
+    if (result) { ERR("libusb_init: %s", libusb_error_name(result)); return result; }
+    struct timespec start, now;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    int last_error = 0;
+    pthread_cleanup_push(cleanup_connection, &connection);
+    for (;;) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec - start.tv_sec >= 120) {
+            result = LIBUSB_ERROR_TIMEOUT;
+            ERR("Timed out waiting for a usable PongoOS USB connection");
             break;
         }
-
-        libusb_device **list;
-        ssize_t sz = libusb_get_device_list(ctx, &list);
-        bool done = false;
-        if(sz < 0)
-        {
-            ERR("libusb_get_device_list: %s", libusb_error_name((int)sz));
-            libusb_exit(ctx);
-            return -1;
-        }
-
-        for(ssize_t i = 0; i < sz; ++i)
-        {
+        ssize_t count = libusb_get_device_list(connection.ctx, &connection.list);
+        if (count < 0) { result = (int)count; break; }
+        libusb_device *device = NULL;
+        for (ssize_t i = 0; i < count; ++i) {
             struct libusb_device_descriptor desc;
-            r = libusb_get_device_descriptor(list[i], &desc);
-            if(r != LIBUSB_SUCCESS)
-            {
-                ERR("libusb_get_device_descriptor: %s", libusb_error_name(r));
-                // continue anyway
+            if (libusb_get_device_descriptor(connection.list[i], &desc)) continue;
+            if (desc.idVendor == PONGO_USB_VENDOR && desc.idProduct == PONGO_USB_PRODUCT) {
+                if (device) { result = LIBUSB_ERROR_BUSY; break; }
+                device = connection.list[i];
             }
-            if(desc.idVendor != PONGO_USB_VENDOR || desc.idProduct != PONGO_USB_PRODUCT)
-            {
-                libusb_unref_device(list[i]);
-                continue;
-            }
-            r = FoundDevice(ctx, list[i], LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED, &stuff);
-            for (ssize_t j = i; j < sz; ++j) {
-                libusb_unref_device(list[j]);
-            }
-
-            if(r != LIBUSB_SUCCESS)
-            {
-                libusb_free_device_list(list, 0);
-                libusb_exit(ctx);
-                return -1;
-            } else {
-                done = true;
-            }
-            break;
         }
-
-        libusb_free_device_list(list, 0);
-
-        if (done) goto end;
+        if (result == LIBUSB_ERROR_BUSY) { ERR("Multiple PongoOS devices connected"); break; }
+        if (device) {
+#ifdef __linux__
+            unsigned char ports[7];
+            int depth = libusb_get_port_numbers(device, ports, sizeof(ports));
+            if (depth > 0 && usb_power_hold(&connection.power, PONGO_SYSFS_ROOT,
+                    libusb_get_bus_number(device), ports, (size_t)depth,
+                    libusb_get_device_address(device)) && errno != ENOENT && errno != ENODEV)
+                LOG(LOG_WARNING, "Cannot hold PongoOS USB runtime power: %s", strerror(errno));
+#endif
+            result = libusb_open(device, &connection.handle);
+            if (!result) result = libusb_set_auto_detach_kernel_driver(connection.handle, 1);
+            if (result == LIBUSB_ERROR_NOT_SUPPORTED && connection.handle) result = 0;
+            int configuration = 0;
+            if (!result) result = libusb_get_configuration(connection.handle, &configuration);
+            if (!result && configuration != 1) result = libusb_set_configuration(connection.handle, 1);
+            if (!result) result = libusb_claim_interface(connection.handle, 0);
+            if (!result) {
+                connection.claimed = true;
+                stuff_t stuff = {.dev = device, .handle = connection.handle};
+                io_start(&stuff);
+                result = stuff.result;
+                break; /* Never replay a partially uploaded command sequence. */
+            }
+            if (result != last_error) {
+                LOG(LOG_WARNING, "PongoOS USB open: %s%s", libusb_error_name(result),
+                    retry_open(result) ? "; retrying discovery" : "");
+                last_error = result;
+            }
+            if (!retry_open(result)) break;
+        }
+        close_connection(&connection);
+        result = 0;
+        struct timeval pause = {.tv_sec = 0, .tv_usec = 200000};
+        result = libusb_handle_events_timeout(connection.ctx, &pause);
+        if (result == LIBUSB_ERROR_INTERRUPTED) result = 0;
+        if (result) break;
     }
-
-    end:
-        libusb_exit(ctx);
-        return 0;
+    pthread_cleanup_pop(1);
+    return result;
 }
+
 #else
 /* ISO C forbids an empty translation unit */
 extern char** environ;

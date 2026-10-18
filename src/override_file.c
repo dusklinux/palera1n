@@ -28,21 +28,35 @@ int override_file(override_file_t *finfo, niarelap_file_t** orig, unsigned int *
 	ret = fstat(fd, &st);
 	if (ret) {
 		LOG(LOG_ERROR, "Cannot fstat fd from file %s: %d (%s)", filename, errno, strerror(errno));
-		return errno;
+		int error = errno;
+		close(fd);
+		return error;
+	}
+	if (!S_ISREG(st.st_mode) || st.st_size <= 0 || (uint64_t)st.st_size > UPLOADSZ_MAX) {
+		LOG(LOG_ERROR, "Override must be a nonempty regular file no larger than %u bytes", UPLOADSZ_MAX);
+		close(fd);
+		return EINVAL;
 	}
 	LOG(LOG_VERBOSE5, "override_file: fstat fd %d succeeded!", fd);	
 	void *addr = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
 	if (addr == MAP_FAILED) {
 		LOG(LOG_ERROR, "Failed to map file %s: %d (%s)", filename, errno, strerror(errno));
-		return errno;
+		int error = errno;
+		close(fd);
+		return error;
+	}
+	if (finfo->magic == OVERRIDE_MAGIC) {
+		munmap(finfo->ptr, finfo->len);
+		close(finfo->fd);
+	} else {
+		finfo->orig_len = *orig_len;
+		finfo->orig_ptr = **orig;
 	}
 	LOG(LOG_VERBOSE5, "override_file: Override file mapped successfully");
 	finfo->magic = OVERRIDE_MAGIC;
 	finfo->fd = fd;
-	finfo->len = (unsigned int)st.st_size;;
+	finfo->len = (unsigned int)st.st_size;
 	finfo->ptr = *(niarelap_file_t*)addr;
-	finfo->orig_len = *orig_len;
-	finfo->orig_ptr = **orig;
 	*orig = (niarelap_file_t*)addr;
 	*orig_len = (unsigned int)st.st_size;
 	LOG(LOG_VERBOSE5, "override_file() finished!");

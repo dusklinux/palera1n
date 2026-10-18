@@ -127,6 +127,7 @@ static int palera1n(int argc, char *argv[], char *envp[]) {
 		int test_libusb = libusb_init(&ctx);
 		if (test_libusb) {
 			LOG(LOG_ERROR, "cannot initialize libusb: %d (%s)\n", test_libusb, libusb_strerror(test_libusb));
+            ret = test_libusb;
 			libusb_exit(ctx);
 			goto cleanup;
 		}
@@ -140,6 +141,30 @@ static int palera1n(int argc, char *argv[], char *envp[]) {
 	if (getenv("USBMUXD_SOCKET_ADDRESS") == NULL && access("/var/run/usbmuxd", F_OK) != 0) 
 		LOG(LOG_WARNING, "/var/run/usbmuxd not found, normal mode device detection will not work.");
 	
+#ifdef USE_LIBUSB
+    uint64_t commands = palerain_option_dfuhelper_only | palerain_option_reboot_device |
+        palerain_option_exit_recovery | palerain_option_enter_recovery | palerain_option_device_info;
+    if (!(palerain_flags & commands)) {
+        ret = pongo_is_connected();
+        if (ret < 0) goto cleanup;
+        if (ret > 0) {
+            set_spin(1);
+            pongo_helper(NULL);
+            ret = pongo_result;
+            goto normal_exit;
+        }
+    }
+    ret = pthread_create(&dfuhelper_thread, NULL, dfuhelper, NULL);
+    if (ret) { LOG(LOG_ERROR, "Cannot start DFU helper: %s", strerror(ret)); goto cleanup; }
+    pthread_join(dfuhelper_thread, NULL);
+    if (palerain_flags & commands) goto normal_exit;
+    ret = exec_checkra1n();
+    if (ret) goto cleanup;
+    if (palerain_flags & (palerain_option_pongo_exit | palerain_option_demote)) goto normal_exit;
+    set_spin(1);
+    pongo_helper(NULL);
+    ret = pongo_result;
+#else
 	pthread_create(&pongo_thread, NULL, pongo_helper, NULL);
 	pthread_create(&dfuhelper_thread, NULL, dfuhelper, NULL);
 	pthread_join(dfuhelper_thread, NULL);
@@ -165,6 +190,7 @@ static int palera1n(int argc, char *argv[], char *envp[]) {
 	{
 		sleep(1);
 	}
+#endif
 normal_exit:
 cleanup:
 	if (override_kpf.magic == OVERRIDE_MAGIC) {
@@ -188,5 +214,9 @@ cleanup:
 }
 
 int main (int argc, char* argv[], char* envp[]) {
-	return palera1n(argc, argv, envp);
+#ifdef __linux__
+    if (argc > 1 && !strcmp(argv[1], "--recover-daemons"))
+        return recovery_main(argc - 1, argv + 1);
+#endif
+    return palera1n(argc, argv, envp);
 }

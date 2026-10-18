@@ -122,6 +122,11 @@ arm64e devices will NEVER be supported.
 
 .Sh OPTIONS
 .Bl -tag -width -indent
+.It Fl -recover-daemons Ar options
+Linux standalone SSHRD recovery. This must be the first option. Use
+.Dl "palera1n --recover-daemons --help"
+for offline bundle, backup, reset, rollback and reboot options. A verified reset
+restores saved launchd defaults; it does not verify a working iOS boot.
 .It Fl -version
 Prints the program version and exit.
 .It Fl -force-revert

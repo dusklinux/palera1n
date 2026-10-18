@@ -27,3 +27,4 @@ src/libcheckra1nhelper.dylib*
 src/Pongo.bin
 sysroot
 compile.sh
+__pycache__/

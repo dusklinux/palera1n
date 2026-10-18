@@ -55,8 +55,10 @@ typedef uint64_t palerain_option_t;
 
 #define PALEINFO_MAGIC 'PLSH'
 
+#ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic warning "-Wpadded"
+#endif
 
 /* paleinfo version 2, appended to ramdisk */
 struct paleinfo {
@@ -68,6 +70,8 @@ struct paleinfo {
     char rootdev[0x10]; /* ex. disk0s1s8 */
 };
 
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 
 #endif

@@ -10,6 +10,7 @@ CFLAGS_FOR_BUILD = -Wall -Wextra -std=c99 -pedantic-errors -O2
 export RESOURCES_DIR OBJDIR GENDIR
 
 C_SRC = $(wildcard *.c)
+C_SRC += $(GENDIR)/gen-recovery.py.c
 OBJS = $(patsubst %,$(OBJDIR)/%,$(C_SRC:.c=.c.o))
 
 ifeq ($(NO_EMBED_HELPER),1)
@@ -142,6 +143,12 @@ endif
 $(GENDIR)/gen-%.c: $(RESOURCES_DIR)/%
 	echo '#include <stdint.h>' > $(RESOURCES_DIR)/../$@
 	cd $(RESOURCES_DIR) && xxd -iC $$(echo $< | cut -d/ -f2) | sed -e 's/unsigned int/uint32_t/' -e 's/unsigned char/uint8_t/' >> ../$@
+
+$(RESOURCES_DIR)/recovery.py: ../recovery/recovery.py
+	cp $< $@
+
+$(GENDIR)/gen-recovery.py.c: $(RESOURCES_DIR)/recovery.py
+	xxd -i -n palera1n_recovery_script $< > $@
 
 $(OBJDIR)/pongo_helper.c.o: pongo_helper.c $(wildcard ../include/*.h) $(RESOURCES_DIR)/ramdisk.dmg $(RESOURCES_DIR)/checkra1n-kpf-pongo
 	$(CC) -c -o $@ $(CFLAGS) -DRAMDISK_UNCOMPRESSED_SIZE="\"$$(wc -c < $(RESOURCES_DIR)/ramdisk.dmg | tr -d ' ')\"" -DKPF_UNCOMPRESSED_SIZE="\"$$(wc -c < $(RESOURCES_DIR)/checkra1n-kpf-pongo | tr -d ' ')\"" $<

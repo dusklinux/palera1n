@@ -1,0 +1,106 @@
+# Native Arch Linux x86_64 build. Uses the installed libraries, not an old sysroot.
+CC ?= cc
+PKGS = libimobiledevice-1.0 libirecovery-1.0 libusbmuxd-2.0 libplist-2.0 libusb-1.0
+BUILD = build/arch
+RES = src/resources
+VERSION = 2.4-dusky
+TAG := $(shell git describe --always --dirty --tags)
+CFLAGS += -O2 -g -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable -pthread
+CPPFLAGS += -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700 -Iinclude -Isrc -DUSE_LIBUSB=1
+CPPFLAGS += -DPALERAIN_VERSION='"$(VERSION)"' -DBUILD_STYLE='"RELEASE"' -DBUILD_OPTIONS='"ARCH_LINUX ROOTLESS RECOVERY"'
+CPPFLAGS += -DBUILD_TAG='"$(TAG)"' -DBUILD_BRANCH='"$(shell git branch --show-current)"'
+CPPFLAGS += -DBUILD_COMMIT='"$(shell git rev-parse HEAD)"' -DBUILD_NUMBER='"$(shell git rev-list --count HEAD)"'
+CPPFLAGS += $(shell pkg-config --cflags $(PKGS))
+LDLIBS += $(shell pkg-config --libs $(PKGS)) -pthread -lm
+FILES = checkra1n checkra1n-kpf-pongo.lzma ramdisk.dmg.lzma binpack.dmg Pongo.bin
+SOURCES = $(wildcard src/*.c)
+GENERATED = $(foreach f,$(FILES),$(BUILD)/gen-$(f).c) $(BUILD)/gen-recovery.c
+OBJECTS = $(patsubst %.c,$(BUILD)/%.o,$(SOURCES)) $(GENERATED:.c=.o)
+
+.DELETE_ON_ERROR:
+.SECONDARY:
+
+.PHONY: all check-host test clean FORCE
+all: check-host build/palera1n-linux-x86_64
+
+check-host:
+	@test "$$(uname -s)-$$(uname -m)" = Linux-x86_64 || { echo 'This target requires Linux x86_64'; exit 1; }
+	pkg-config --exists $(PKGS)
+
+RAW = checkra1n-linux-x86_64 checkra1n-kpf-pongo ramdisk.dmg binpack.dmg Pongo.bin
+$(RES)/checkra1n-linux-x86_64: URL = https://assets.checkra.in/downloads/preview/0.1337.3/checkra1n-linux-x86_64
+$(RES)/checkra1n-kpf-pongo: URL = https://cdn.nickchan.lol/palera1n/artifacts/kpf/iOS15/checkra1n-kpf-pongo
+$(RES)/ramdisk.dmg: URL = https://cdn.nickchan.lol/palera1n/c-rewrite/deps/ramdisk.dmg
+$(RES)/binpack.dmg: URL = https://cdn.nickchan.lol/palera1n/c-rewrite/deps/binpack.dmg
+$(RES)/Pongo.bin: URL = https://cdn.nickchan.lol/palera1n/artifacts/kpf/iOS15/Pongo.bin
+$(addprefix $(RES)/,$(RAW)):
+	@if [ "$(OFFLINE)" = 1 ]; then echo "Offline payload missing: $@" >&2; exit 1; fi
+	curl --fail --location --retry 3 --connect-timeout 15 --max-time 180 -o $@.tmp $(URL)
+	test -s $@.tmp
+	mv $@.tmp $@
+
+.PHONY: check-resources
+check-resources: $(addprefix $(RES)/,$(RAW))
+	cd $(RES) && sha256sum -c $(CURDIR)/tools/resources.sha256
+
+$(RES)/checkra1n: $(RES)/checkra1n-linux-x86_64
+	$(MAKE) -C src/tools CC_FOR_BUILD="$(CC)" CFLAGS_FOR_BUILD='-O2 -std=c99'
+	src/tools/checkra1npatcher $< $@
+
+$(RES)/%.lzma: $(RES)/%
+	xz --format=lzma -c6 $< > $@.tmp
+	mv $@.tmp $@
+
+$(BUILD)/gen-%.c: $(RES)/%
+	@mkdir -p $(@D)
+	xxd -i -n $(subst -,_,$(subst .,_,$*)) $< > $@
+
+$(BUILD)/gen-recovery.c: recovery/recovery.py
+	@mkdir -p $(@D)
+	xxd -i -n palera1n_recovery_script $< > $@
+
+$(BUILD)/gen-%.o: $(BUILD)/gen-%.c Makefile.arch
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(BUILD)/%.o: %.c Makefile.arch
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
+
+# Refresh only version-bearing objects when Git metadata changes.
+FORCE:
+$(BUILD)/metadata: FORCE
+	@mkdir -p $(@D)
+	@printf '%s\n' '$(TAG)' '$(shell git rev-parse HEAD)' '$(shell git branch --show-current)' '$(shell git rev-list --count HEAD)' > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+
+$(BUILD)/src/credits.o $(BUILD)/src/optparse.o: $(BUILD)/metadata
+
+$(BUILD)/src/pongo_helper.o: CPPFLAGS += -DRAMDISK_UNCOMPRESSED_SIZE='"$(shell wc -c < $(RES)/ramdisk.dmg 2>/dev/null)"' -DKPF_UNCOMPRESSED_SIZE='"$(shell wc -c < $(RES)/checkra1n-kpf-pongo 2>/dev/null)"'
+$(BUILD)/src/pongo_helper.o: $(RES)/ramdisk.dmg $(RES)/checkra1n-kpf-pongo
+
+build/palera1n-linux-x86_64: $(OBJECTS) | check-resources
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
+
+test:
+	python3 -m unittest discover -s tests -v
+	$(MAKE) -f Makefile.arch build/test-usb build/test-pongo build/test-exploit
+	build/test-usb
+	build/test-pongo
+	build/test-exploit
+
+build/test-usb: tests/test_usb.c src/usb_libusb.c src/usb_power.c include/usb_power.h include/palerain.h
+	@mkdir -p build
+	$(CC) -D_DEFAULT_SOURCE -DUSE_LIBUSB -Iinclude $(shell pkg-config --cflags $(PKGS)) -std=c99 -Wall -Wextra -Wno-unused-parameter -pthread tests/test_usb.c src/usb_power.c -o $@
+
+build/test-pongo: tests/test_pongo.c src/pongo_helper.c include/palerain.h
+	@mkdir -p build
+	$(CC) -D_DEFAULT_SOURCE -DUSE_LIBUSB -Iinclude $(shell pkg-config --cflags $(PKGS)) -std=c99 -Wall -Wextra -Wno-unused-parameter -pthread $< -o $@
+
+build/test-exploit: tests/test_exploit.c src/exec_checkra1n.c include/palerain.h
+	@mkdir -p build
+	$(CC) -D_DEFAULT_SOURCE -DUSE_LIBUSB -Iinclude $(shell pkg-config --cflags $(PKGS)) -std=c99 -Wall -Wextra -Wno-unused-parameter -pthread $< -o $@
+
+clean:
+	rm -rf $(BUILD) build/palera1n-linux-x86_64 build/test-usb build/test-pongo build/test-exploit
+
+-include $(OBJECTS:.o=.d)

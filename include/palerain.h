@@ -43,6 +43,7 @@ typedef libusb_device_handle *usb_device_handle_t;
 typedef struct stuff
 {
     pthread_t th;
+    int result;
     libusb_device *dev;
     usb_device_handle_t handle;
 } stuff_t;
@@ -209,6 +210,9 @@ boyermoore_horspool_memmem(const unsigned char* haystack, size_t hlen,
 usb_ret_t USBControlTransfer(usb_device_handle_t handle, uint8_t bmRequestType, uint8_t bRequest, uint16_t wValue, uint16_t wIndex, uint32_t wLength, void *data, uint32_t *wLenDone);
 const char *usb_strerror(usb_ret_t err);
 int wait_for_pongo(void);
+int pongo_is_connected(void);
+extern int pongo_result;
+int recovery_main(int argc, char **argv);
 int tui(void);
 int optparse(int argc, char* argv[]);
 

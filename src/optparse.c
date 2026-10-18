@@ -81,6 +81,7 @@ static int usage(int e, char* prog_name)
 			"Copyright (C) 2024, palera1n team, All Rights Reserved.\n\n"
 			"iOS/iPadOS/tvOS 15-26, bridgeOS 5-10 arm64 jailbreaking tool\n\n"
 			"\t--version\t\t\t\tPrint version\n"
+            "\t--recover-daemons [options]\tStandalone SSHRD recovery (use --help)\n"
 			"\t--force-revert\t\t\t\tRemove jailbreak\n"
 			"\t--force-enable-ssv\t\t\tForce SSV detection to result in YES\n"
 #ifdef DEV_BUILD
@@ -103,9 +104,7 @@ static int usage(int e, char* prog_name)
 			"\t-i, --override-checkra1n <file>\t\tOverride checkra1n\n"
 			"\t-k, --override-pongo <file>\t\tOverride Pongo image\n"
 			"\t-K, --override-kpf <file>\t\tOverride kernel patchfinder\n"
-#ifdef ROOTFUL
 			"\t-l, --rootless\t\t\t\tBoots rootless. This is the default\n"
-#endif
 			"\t-L, --jbinit-log-to-file\t\tMake jbinit log to /cores/jbinit.log (can be read from sandbox while jailbroken)\n"
 			"\t-n, --exit-recovery\t\t\tExit recovery mode\n"
 			"\t-I, --device-info\t\t\tPrint info about the connected device\n"
@@ -183,7 +182,7 @@ int optparse(int argc, char* argv[]) {
 #endif
 			break;
 		case 'e':
-			if (strlen(optarg) > (sizeof(xargs_cmd) - 0x20)) {
+			if (strlen(optarg) > CMD_LEN_MAX - sizeof("xargs ") - 1) {
                 LOG(LOG_FATAL, "Boot arguments too long");
                 return -1;
             }
@@ -243,6 +242,10 @@ int optparse(int argc, char* argv[]) {
 		case 'K':
 			if (override_file(&override_kpf, kpf_to_upload, &checkra1n_kpf_pongo_lzma_len, optarg))
 				return 1;
+			if (override_kpf.len < sizeof(struct mach_header_64)) {
+				LOG(LOG_FATAL, "Kernel patchfinder is too short for a Mach-O header");
+				return -1;
+			}
 			struct mach_header_64* hdr = (struct mach_header_64*)override_kpf.ptr;
 			if (hdr->magic != MH_MAGIC_64 && hdr->magic != MH_CIGAM_64) {
 				LOG(LOG_FATAL, "Invalid kernel patchfinder: Not thin 64-bit Mach-O");

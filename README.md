@@ -1,3 +1,40 @@
+Build and test on Arch Linux x86_64 with `tools/build-linux.sh --stress`.
+Use `--offline` after the first build to reuse cached payloads; `--clean` rebuilds
+all native objects. Output defaults to `build/ready/`, including checksums and
+build versions. Build dependencies: base-devel, git, libusb, libimobiledevice,
+libirecovery, libusbmuxd, libplist, pkgconf, vim (xxd), xz and Python 3.15+.
+The script does not install packages or touch a connected phone.
+
+# palera1n — Arch Linux recovery fork
+
+This fork adds a native Linux x86_64 build and an explicit, offline daemon-recovery
+command. It does **not** guarantee that every bootloop is recoverable or that every
+checkm8 attempt succeeds. Resetting overrides can succeed while iOS still fails to boot.
+
+Build on Arch Linux:
+
+```sh
+sudo pacman -S --needed base-devel git libusb libimobiledevice libirecovery libusbmuxd libplist pkgconf vim xz python openssh sshpass usbmuxd
+make -f Makefile.arch -j"$(nproc)"
+make -f Makefile.arch test
+./build/palera1n-linux-x86_64 -l -s -V
+```
+
+The build embeds only the Linux x86_64 exploit and uses the installed Arch libraries.
+Recovery targets Python 3.15+; check the actual interpreter used by sudo. No old static
+sysroot, macOS build, TUI dependencies, or other CPU binaries are required.
+
+See [offline recovery](docs/RECOVERY.md) for bundle preparation, inspect/reset/rollback
+commands, and the exact limits of the repair. Preserve the offline bundle on persistent
+storage **before** disabling services. A compiled host binary alone is not a recovery image.
+
+PongoOS discovery handles an already connected device and transient open errors, keeps
+runtime autosuspend off only for the active PongoOS USB session, bounds transfers, and
+stops on failed commands/uploads. Kernel handoff is reported separately from a working
+iOS boot. Initial exploit/cable/hardware failures can still require another DFU attempt.
+
+The original upstream documentation follows.
+
 # palera1n
 [![GitHub Release](https://img.shields.io/github/v/release/palera1n/palera1n?include_prereleases)](https://github.com/palera1n/palera1n/releases)
 [![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/palera1n/palera1n/total)](https://github.com/palera1n/palera1n/releases)
